@@ -34,7 +34,7 @@
    | 项目名称     | `sms-bombing-tool`（可自定义） |
    | 生产分支     | `main`                         |
    | 构建命令     | 留空                           |
-   | 构建输出目录 | `.`                            |
+   | 构建输出目录 | `public`                       |
 
 6. 点击 **保存并部署**
 
@@ -52,15 +52,21 @@
 ## 📦 项目结构
 
 ```
-├── index.html            # 主页面（前端代码 + 154 个接口定义）
+├── public/               # ← 静态资源目录（Pages 的「构建输出目录」）
+│   ├── index.html        #   主页面（前端代码 + 154 个接口定义）
+│   ├── _headers          #   CDN 缓存策略配置
+│   ├── logo.ico          #   网站图标
+│   └── logo.gif          #   页面 Logo
 ├── functions/
 │   └── [[path]].js       # CORS 代理函数（自动部署为 Cloudflare Pages Functions）
-├── _headers              # CDN 缓存策略配置
-├── wrangler.json         # Wrangler 配置文件
-├── logo.ico              # 网站图标
-├── logo.gif              # 页面 Logo
+├── test/                 # 单元测试（npm test）
+├── wrangler.json         # Wrangler 配置（pages_build_output_dir = public）
+├── package.json          # npm 脚本
 └── README.md             # 项目说明
 ```
+
+> 静态资源单独放在 `public/` 是有意为之：这样部署到线上的只有 `index.html`、
+> 图标和 `_headers`，**源码、`.git` 目录、配置文件都不会被公开**。
 
 ---
 
@@ -137,7 +143,7 @@ npm install -g wrangler
 wrangler login
 
 # 4. 本地预览（会启动本地服务器）
-wrangler pages dev .
+wrangler pages dev
 ```
 
 也可以用 npm 脚本：
@@ -162,8 +168,11 @@ git push origin main
 如果自动部署未生效，可手动部署：
 
 ```bash
-npx wrangler pages deploy . --project-name 你的项目名 --branch main
+npx wrangler pages deploy --project-name 你的项目名 --branch main
 ```
+
+静态资源目录由 `wrangler.json` 里的 `pages_build_output_dir` 指定（`public`），
+不需要再额外传目录参数。
 
 ### 清除 CDN 缓存
 

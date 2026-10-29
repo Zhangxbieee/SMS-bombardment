@@ -1,0 +1,9 @@
+# 静态资源目录以外的都不应发布（双保险）
+.git
+.wrangler
+node_modules
+functions
+test
+package.json
+wrangler.json
+README.md

@@ -6,6 +6,6 @@
   "scripts": {
     "test": "node test/classify.test.mjs",
     "dev": "wrangler pages dev",
-    "deploy": "wrangler pages deploy . --branch main"
+    "deploy": "wrangler pages deploy --branch main"
   }
 }

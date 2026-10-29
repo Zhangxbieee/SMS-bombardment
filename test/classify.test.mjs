@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const html = readFileSync(join(here, "..", "index.html"), "utf8");
+const html = readFileSync(join(here, "..", "public", "index.html"), "utf8");
 
 /**
  * 按字符串 / 模板字面量感知的规则抽取函数定义
