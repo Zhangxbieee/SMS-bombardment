@@ -31,7 +31,7 @@
 
    | 设置项       | 值                             |
    | ------------ | ------------------------------ |
-   | 项目名称     | `sms-bombing-tool`（可自定义） |
+   | 项目名称     | `zhangxbieee-sms-bombardment` |
    | 生产分支     | `main`                         |
    | 构建命令     | 留空                           |
    | 构建输出目录 | `public`                       |
@@ -45,7 +45,7 @@
 ### ✅ 完成！
 
 无需额外配置 proxy 或 Workers，**Cloudflare Pages 会自动处理 `functions/` 目录下
-的代理函数**。
+的代理函数**。访问地址：https://zhangxbieee-sms-bombardment.pages.dev
 
 ---
 

@@ -39,4 +39,4 @@ echo "🌐 部署到生产环境..."
 wrangler pages deploy --branch main
 
 echo "✅ 部署完成！"
-echo "📱 访问地址：https://sms-bombing-tool.pages.dev"
+echo "📱 访问地址：https://zhangxbieee-sms-bombardment.pages.dev"
