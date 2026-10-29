@@ -1,0 +1,11 @@
+{
+  "name": "sms-bombardment",
+  "version": "1.0.0",
+  "private": true,
+  "description": "基于 Cloudflare Pages 的短信测压工具（仅供学习交流）",
+  "scripts": {
+    "test": "node test/classify.test.mjs",
+    "dev": "wrangler pages dev",
+    "deploy": "wrangler pages deploy . --branch main"
+  }
+}

