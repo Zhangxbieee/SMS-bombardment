@@ -3700,7 +3700,8 @@ button:hover {
 
        // 全局停止控制标志
         let isRunning = false;
-        
+        let stoppedEarly = false;   // 是否提前停止（自动停止或手动停止）
+            
         // 全局统计计数器（三态）
         let globalSentCount = 0;      // 已触发
         let globalUnknownCount = 0;   // 未确认
@@ -3733,6 +3734,15 @@ button:hover {
             const value = parseInt(raw, 10);
             if (!Number.isFinite(value)) return fallback;
             return Math.min(max, Math.max(min, value));
+        }
+
+        // 取出占比最高的失败原因，用于说明「到底为什么失败」
+        function topFailureReason(stats) {
+            const entries = Object.entries(stats || {}).sort((a, b) => b[1] - a[1]);
+            if (!entries.length) return '未知';
+            const [reason, count] = entries[0];
+            const total = Object.values(stats).reduce((a, b) => a + b, 0);
+            return `「${reason}」×${count}（占失败 ${(count / total * 100).toFixed(0)}%）`;
         }
         
         // 并发控制函数
@@ -3805,6 +3815,7 @@ button:hover {
         // 停止发送函数
         function stopRequests() {
             isRunning = false;
+            stoppedEarly = true;
             document.getElementById('sendBtn').style.display = 'inline-block';
             document.getElementById('stopBtn').style.display = 'none';
             addLog('⏹️ 已停止发送', 'error');
@@ -3855,6 +3866,7 @@ button:hover {
     globalUnknownCount = 0;
     globalFailedCount = 0;
     consecutiveFailures = 0; // 重置连续失败计数器
+    stoppedEarly = false;
 
     let sentCount = 0;      // 已触发
     let unknownCount = 0;   // 未确认
@@ -3864,6 +3876,8 @@ button:hover {
     
     // 状态统计
     const statusStats = {};
+    // 失败原因分布（用于判断真正的失败主因）
+    const reasonStats = {};
     
     console.log('🚀 开始发送请求...');
     console.log(`📱 手机号: ${phoneNumber}`);
@@ -3985,6 +3999,7 @@ button:hover {
                         failedCount++;
                         globalFailedCount++;
                         consecutiveFailures++;
+                        reasonStats[failReason] = (reasonStats[failReason] || 0) + 1;
                         console.warn(`❌ [${status}] ${apiRequest.method || 'POST'} 失败(${failReason}) (${duration}ms): ${actualUrl}`);
                         
                         // 显示部分失败日志（前5个 + 每20个显示一次）
@@ -3995,8 +4010,9 @@ button:hover {
                         // ⭐ 连续失败过多，自动停止
                         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && isRunning) {
                             isRunning = false;
+                            stoppedEarly = true;
                             addLog(`⚠️ 连续失败${consecutiveFailures}次，已自动停止`, 'error');
-                            addLog('💡 可能是代理额度超限，请明天再试', 'info');
+                            addLog(`💡 主要失败原因：${topFailureReason(reasonStats)}`, 'info');
                             console.error(`🛑 连续失败${consecutiveFailures}次，自动停止发送`);
                         }
                     }
@@ -4004,7 +4020,7 @@ button:hover {
                     // 每10个已触发显示一次进度
                     if (sentCount > 0 && sentCount % 10 === 0) {
                         console.log(`📊 进度: ${completedRequests}/${totalRequests} | 已触发: ${sentCount} | 未确认: ${unknownCount} | 失败: ${failedCount}`);
-                        addLog(`已触发 ${sentCount} · 未确认 ${unknownCount} · 失败 ${failedCount}`, 'system');
+                        addLog(`进度 ${completedRequests}/${totalRequests} · 已触发 ${sentCount} · 未确认 ${unknownCount} · 失败 ${failedCount}`, 'system');
                     }
                     
                 } catch (error) {
@@ -4039,17 +4055,23 @@ button:hover {
     console.log('═'.repeat(60));
     console.log(`⏱️  总耗时: ${totalTime}秒`);
     console.log(`📦 总请求: ${totalRequests}个`);
-    console.log(`✅ 已触发: ${sentCount}个 (${(sentCount/totalRequests*100).toFixed(1)}%)`);
-    console.log(`❓ 未确认: ${unknownCount}个 (${(unknownCount/totalRequests*100).toFixed(1)}%)`);
-    console.log(`❌ 失败: ${failedCount}个 (${(failedCount/totalRequests*100).toFixed(1)}%)`);
+    console.log(`📥 实际完成: ${completedRequests}个${stoppedEarly ? '（提前停止）' : ''}`);
+    console.log(`✅ 已触发: ${sentCount}个 (${(sentCount/completedRequests*100).toFixed(1)}%)`);
+    console.log(`❓ 未确认: ${unknownCount}个 (${(unknownCount/completedRequests*100).toFixed(1)}%)`);
+    console.log(`❌ 失败: ${failedCount}个 (${(failedCount/completedRequests*100).toFixed(1)}%)`);
     console.log('\n📈 状态码分布:');
     
     // 按状态码排序并显示
     const sortedStats = Object.entries(statusStats).sort((a, b) => b[1] - a[1]);
     sortedStats.forEach(([code, count]) => {
-        const percentage = (count / totalRequests * 100).toFixed(1);
+        const percentage = (count / completedRequests * 100).toFixed(1);
         const emoji = code === '200' ? '✅' : code.startsWith('4') ? '⚠️' : '❌';
         console.log(`   ${emoji} ${code}: ${count}个 (${percentage}%)`);
+    });
+    
+    console.log('\n📋 失败原因分布:');
+    Object.entries(reasonStats).sort((a, b) => b[1] - a[1]).slice(0, 8).forEach(([reason, count]) => {
+        console.log(`   ${reason}: ${count}个 (${(count / failedCount * 100).toFixed(1)}%)`);
     });
     
     console.log('═'.repeat(60) + '\n');
@@ -4065,13 +4087,18 @@ button:hover {
     // 添加最终统计日志（显示完整统计）
     addLog('─'.repeat(30), 'system');
     if (wasRunning) {
-        addLog(`📊 发送完成！`, 'system');
+        addLog(`发送完成`, 'system');
     } else {
-        addLog(`⏹️ 已停止发送`, 'system');
+        addLog(`已停止发送`, 'system');
     }
     
-    // 计算占比
-    const pct = (n) => totalRequests > 0 ? ((n / totalRequests) * 100).toFixed(1) : '0.0';
+    // 占比按「实际完成数」算，而不是计划数 —— 否则提前停止时会把失败率严重低估
+    const pct = (n) => completedRequests > 0 ? ((n / completedRequests) * 100).toFixed(1) : '0.0';
+    
+    // 计划 vs 完成
+    if (stoppedEarly || completedRequests < totalRequests) {
+        addLog(`计划 ${totalRequests} 个，实际完成 ${completedRequests} 个${stoppedEarly ? '（提前停止）' : ''}`, 'system');
+    }
     
     // 显示完整统计
     if (sentCount > 0) {
@@ -4083,11 +4110,21 @@ button:hover {
     if (failedCount > 0) {
         addLog(`失败: ${failedCount} 个 (${pct(failedCount)}%)`, 'error');
     }
+    
+    // 失败原因分布：让用户知道到底卡在哪
+    if (failedCount > 0) {
+        const topReasons = Object.entries(reasonStats).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        addLog(`失败主因: ${topReasons.map(([r, c]) => `${r}×${c}`).join('、')}`, 'error');
+    }
+    
     addLog(`⏱️ 耗时: ${totalTime}秒`, 'info');
     
     // 给出结论性提示
     if (failedCount > 0 && failedCount > (sentCount + unknownCount) * 2) {
-        addLog('⚠️ 大量请求失败，优先检查代理配置与接口可达性', 'error');
+        addLog(`⚠️ 失败率偏高（${pct(failedCount)}%），主因「${Object.entries(reasonStats).sort((a, b) => b[1] - a[1])[0]?.[0] || '未知'}」`, 'error');
+    }
+    if (stoppedEarly) {
+        addLog('💡 已提前停止，如需跑完可降低「每接口重复」或调大「间隔」', 'info');
     }
     if (sentCount === 0 && unknownCount > 0) {
         addLog('💡 全部为「未确认」：请求已送达但接口没给出明确业务标识，实际是否发送短信无法判定', 'info');
